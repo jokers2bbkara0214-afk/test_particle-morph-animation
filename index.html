@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>テスト　JS</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .ui {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(18, 18, 28, 0.72);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .ui input {
+      width: min(62vw, 360px);
+      padding: 12px 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      outline: none;
+      font-size: 16px;
+    }
+
+    .ui button {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 10px;
+      background: #6c5ce7;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .ui button:hover {
+      filter: brightness(1.08);
+    }
+
+    .hint {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      color: rgba(255,255,255,0.72);
+      font-size: 13px;
+      letter-spacing: 0.03em;
+      text-align: center;
+      padding: 0 12px;
+      white-space: normal;
+      max-width: 90vw;
+    }
+
+    @media (max-width: 760px) {
+      .ui {
+        width: calc(100% - 24px);
+      }
+
+      .ui input {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="ui">
+    <input id="textInput" type="text" maxlength="20" placeholder="文字を入力" />
+    <button id="applyBtn">文字を反映</button>
+    <button id="cycleBtn">自動変形: ON</button>
+    <button id="explodeBtn">爆発</button>
+  </div>
+
+  <div class="hint">
+    球体 → 文字 → 星 → 銀河 → DNA → ニューラルネット → 球体 / マウス吸引 / クリック爆発
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+
+    const textInput = document.getElementById("textInput");
+    const applyBtn = document.getElementById("applyBtn");
+    const cycleBtn = document.getElementById("cycleBtn");
+    const explodeBtn = document.getElementById("explodeBtn");
+
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+
+    const offCanvas = document.createElement("canvas");
+    const offCtx = offCanvas.getContext("2d", { willReadFrequently: true });
+    offCanvas.width = width;
+    offCanvas.height = height;
+
+    const PARTICLE_COUNT = 1800;
+    const particles = [];
+
+    const STATES = {
+      SPHERE: "sphere",
+      TEXT: "text",
+      STAR: "star",
+      GALAXY: "galaxy",
+      DNA: "dna",
+      NEURAL: "neural"
+    };
+
+    let currentState = STATES.SPHERE;
+    let autoCycle = true;
+    let currentCycleIndex = 0;
+    let cycleElapsed = 0;
+    let reformTimerId = null;
+
+    const cycleSequence = [
+      { state: STATES.SPHERE, duration: 2600 },
+      { state: STATES.TEXT, duration: 2200 },
+      { state: STATES.STAR, duration: 2200 },
+      { state: STATES.GALAXY, duration: 2400 },
+      { state: STATES.DNA, duration: 2400 },
+      { state: STATES.NEURAL, duration: 2600 },
+      { state: STATES.SPHERE, duration: 2800 }
+    ];
+
+    let mouse = {
+      x: width / 2,
+      y: height / 2,
+      active: false,
+      radius: 170
+    };
+
+    let globalTime = 0;
+    let sphereRotation = 0;
+
+    class Particle {
+      constructor(index) {
+        this.index = index;
+        this.x = Math.random() * width;
+        this.y = Math.random() * height;
+        this.vx = 0;
+        this.vy = 0;
+        this.size = 1 + Math.random() * 1.6;
+        this.baseAlpha = 0.45 + Math.random() * 0.4;
+        this.hueSeed = Math.random() * 360;
+        this.depth = 1;
+
+        this.targetX = this.x;
+        this.targetY = this.y;
+
+        this.sx = 0;
+        this.sy = 0;
+        this.sz = 0;
+
+        this.orbitOffset = Math.random() * Math.PI * 2;
+        this.orbitPower = 0.6 + Math.random() * 0.8;
+      }
+
+      setTarget(x, y, depth = 1) {
+        this.targetX = x;
+        this.targetY = y;
+        this.depth = depth;
+      }
+
+      explode(force = 14) {
+        const angle = Math.random() * Math.PI * 2;
+        const power = force * (0.5 + Math.random() * 0.9);
+        this.vx += Math.cos(angle) * power;
+        this.vy += Math.sin(angle) * power;
+      }
+
+      update(dt) {
+        const dx = this.targetX - this.x;
+        const dy = this.targetY - this.y;
+
+        this.vx += dx * 0.015;
+        this.vy += dy * 0.015;
+
+        if (mouse.active) {
+          const mx = mouse.x - this.x;
+          const my = mouse.y - this.y;
+          const dist = Math.sqrt(mx * mx + my * my) || 1;
+
+          if (dist < mouse.radius) {
+            const force = 1 - dist / mouse.radius;
+            this.vx += (mx / dist) * force * 1.6;
+            this.vy += (my / dist) * force * 1.6;
+          }
+        }
+
+        this.vx *= 0.90;
+        this.vy *= 0.90;
+
+        this.x += this.vx * dt * 0.06;
+        this.y += this.vy * dt * 0.06;
+      }
+
+      draw() {
+        const animatedHue = (240 + this.depth*80 + performance.now()*0.02) % 360;
+          
+
+        const radius = this.size * this.depth;
+        const alpha = Math.min(1, this.baseAlpha * (0.55 + this.depth * 0.65));
+
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, radius, 0, Math.PI * 2);
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = `hsla(${animatedHue}, 100%, 60%, 0.8)`;
+        ctx.fillStyle = `hsla(${animatedHue}, 100%, 66%, ${alpha})`;
+        ctx.fill();
+      }
+    }
+
+    function initParticles() {
+      particles.length = 0;
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        particles.push(new Particle(i));
+      }
+
+      assignSphereBase();
+      setState(STATES.SPHERE);
+    }
+
+    function assignSphereBase() {
+      const radius = Math.min(width, height) * 0.18;
+
+      for (let i = 0; i < particles.length; i++) {
+        const phi = Math.acos(1 - (2 * (i + 0.5)) / particles.length);
+        const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
+
+        particles[i].sx = radius * Math.cos(theta) * Math.sin(phi);
+        particles[i].sy = radius * Math.sin(theta) * Math.sin(phi);
+        particles[i].sz = radius * Math.cos(phi);
+      }
+    }
+
+    function updateSphereTargets() {
+      sphereRotation += 0.0075;
+
+      const cx = width / 2;
+      const cy = height / 2;
+      const perspective = Math.min(width, height) * 0.95;
+      const swirl = globalTime * 0.0011;
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+
+        const localAngle = sphereRotation + p.orbitOffset + swirl * p.orbitPower;
+        const spiral = Math.sin(globalTime * 0.0013 + i * 0.02) * 0.18;
+
+        const x0 = p.sx;
+        const y0 = p.sy;
+        const z0 = p.sz;
+
+        const x1 = x0 * Math.cos(localAngle) - z0 * Math.sin(localAngle);
+        const z1 = x0 * Math.sin(localAngle) + z0 * Math.cos(localAngle);
+
+        const x2 = x1 * Math.cos(spiral) - y0 * Math.sin(spiral);
+        const y2 = x1 * Math.sin(spiral) + y0 * Math.cos(spiral);
+
+        const wobble = Math.sin(globalTime * 0.001 + i * 0.01) * 0.28;
+        const y3 = y2 * Math.cos(wobble) - z1 * Math.sin(wobble);
+        const z3 = y2 * Math.sin(wobble) + z1 * Math.cos(wobble);
+
+        const scale = perspective / (perspective + z3 + 320);
+        const depth = Math.max(0.4, Math.min(1.75, scale));
+
+        p.setTarget(
+          cx + x2 * scale,
+          cy + y3 * scale,
+          depth
+        );
+      }
+    }
+
+    function getBestFontSize(text) {
+      const maxWidth = width * 0.82;
+      const maxHeight = height * 0.34;
+      let fontSize = Math.min(width / 3.8, 200);
+
+      while (fontSize > 20) {
+        offCtx.font = `bold ${fontSize}px Arial, sans-serif`;
+        const textWidth = offCtx.measureText(text).width;
+
+        if (textWidth <= maxWidth && fontSize <= maxHeight) {
+          return fontSize;
+        }
+
+        fontSize -= 4;
+      }
+
+      return 20;
+    }
+
+    function buildTextPoints(text) {
+      const safeText = (text || "").trim();
+      if (!safeText) return [];
+
+      offCtx.clearRect(0, 0, width, height);
+
+      const fontSize = getBestFontSize(safeText);
+
+      offCtx.textAlign = "center";
+      offCtx.textBaseline = "middle";
+      offCtx.fillStyle = "#fff";
+      offCtx.font = `bold ${fontSize}px Arial, sans-serif`;
+      offCtx.fillText(safeText, width / 2, height / 2);
+
+      const imageData = offCtx.getImageData(0, 0, width, height);
+      const data = imageData.data;
+      const points = [];
+      const gap = Math.max(5, Math.floor(width / 220));
+
+      for (let y = 0; y < height; y += gap) {
+        for (let x = 0; x < width; x += gap) {
+          const index = (y * width + x) * 4;
+          if (data[index + 3] > 120) {
+            points.push({ x, y });
+          }
+        }
+      }
+
+      return points;
+    }
+
+    function buildStarPoints() {
+      const points = [];
+      const cx = width / 2;
+      const cy = height / 2;
+      const outer = Math.min(width, height) * 0.18;
+      const inner = outer * 0.45;
+      const spikes = 5;
+
+      const vertices = [];
+      for (let i = 0; i < spikes * 2; i++) {
+        const angle = (Math.PI * i) / spikes - Math.PI / 2;
+        const r = i % 2 === 0 ? outer : inner;
+        vertices.push({
+          x: cx + Math.cos(angle) * r,
+          y: cy + Math.sin(angle) * r
+        });
+      }
+
+      for (let i = 0; i < vertices.length; i++) {
+        const a = vertices[i];
+        const b = vertices[(i + 1) % vertices.length];
+
+        for (let j = 0; j < 160; j++) {
+          const t = j / 160;
+          points.push({
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t
+          });
+        }
+      }
+
+      return points;
+    }
+
+    function buildGalaxyPoints() {
+      const points = [];
+      const cx = width / 2;
+      const cy = height / 2;
+
+      const arms = 4;
+      const maxR = Math.min(width, height) * 0.26;
+      const spin = globalTime * 0.0015;
+
+      for (let i = 0; i < 2600; i++) {
+        const arm = i % arms;
+        const t = i / 2600;
+
+        const radius = Math.pow(t, 0.82) * maxR;
+        const baseAngle = arm * ((Math.PI * 2) / arms);
+        const twist = radius * 0.11;
+
+        const armSpread = (1 - t) * 0.55 + 0.05;
+        const randomAngle = (Math.random() - 0.5) * armSpread;
+        const randomRadius = (Math.random() - 0.5) * (18 + 22 * (1 - t));
+
+        const angle = baseAngle + twist + randomAngle + spin;
+
+        const x = cx + Math.cos(angle) * (radius + randomRadius);
+        const y = cy + Math.sin(angle) * (radius * 0.72 + randomRadius * 0.55);
+
+        points.push({ x, y });
+      }
+
+      for (let i = 0; i < 500; i++) {
+        const r = Math.random() * maxR * 0.12;
+        const a = Math.random() * Math.PI * 2;
+        points.push({
+          x: cx + Math.cos(a) * r,
+          y: cy + Math.sin(a) * r * 0.8
+        });
+      }
+
+      return points;
+    }
+
+    function buildDnaPoints() {
+      const points = [];
+      const cx = width / 2;
+      const cy = height / 2;
+      const halfHeight = Math.min(width, height) * 0.22;
+      const waveWidth = Math.min(width, height) * 0.12;
+
+      for (let i = 0; i < 900; i++) {
+        const t = i / 899;
+        const y = cy - halfHeight + t * halfHeight * 2;
+        const phase = t * Math.PI * 7 + globalTime * 0.003;
+
+        const x1 = cx + Math.sin(phase) * waveWidth;
+        const x2 = cx - Math.sin(phase) * waveWidth;
+
+        points.push({ x: x1, y });
+        points.push({ x: x2, y });
+
+        if (i % 8 === 0) {
+          for (let j = 0; j <= 10; j++) {
+            const s = j / 10;
+            points.push({
+              x: x1 + (x2 - x1) * s,
+              y: y
+            });
+          }
+        }
+      }
+
+      return points;
+    }
+
+    function buildNeuralPoints() {
+      const points = [];
+      const cx = width / 2;
+      const cy = height / 2;
+      const layers = 5;
+      const layerGap = Math.min(width, height) * 0.12;
+      const nodesPerLayer = [5, 8, 10, 8, 5];
+      const time = globalTime * 0.0012;
+
+      const layerNodes = [];
+
+      for (let l = 0; l < layers; l++) {
+        const nodeCount = nodesPerLayer[l];
+        const x = cx + (l - (layers - 1) / 2) * layerGap;
+        const layerHeight = Math.min(width, height) * 0.32;
+        const nodes = [];
+
+        for (let n = 0; n < nodeCount; n++) {
+          const t = nodeCount === 1 ? 0.5 : n / (nodeCount - 1);
+          const baseY = cy - layerHeight / 2 + t * layerHeight;
+          const wobble = Math.sin(time * 2 + l * 0.9 + n * 0.8) * 12;
+
+          nodes.push({
+            x,
+            y: baseY + wobble
+          });
+        }
+
+        layerNodes.push(nodes);
+      }
+
+      // ノード自体
+      for (const nodes of layerNodes) {
+        for (const node of nodes) {
+          for (let i = 0; i < 18; i++) {
+            const a = (Math.PI * 2 * i) / 18;
+            const r = 8 + Math.sin(time * 3 + i) * 2;
+            points.push({
+              x: node.x + Math.cos(a) * r,
+              y: node.y + Math.sin(a) * r
+            });
+          }
+          points.push({ x: node.x, y: node.y });
+        }
+      }
+
+      // レイヤー間の接続線
+      for (let l = 0; l < layerNodes.length - 1; l++) {
+        const current = layerNodes[l];
+        const next = layerNodes[l + 1];
+
+        for (let i = 0; i < current.length; i++) {
+          for (let j = 0; j < next.length; j++) {
+            // 全結合だと多すぎるので間引く
+            if ((i + j + l) % 2 !== 0) continue;
+
+            const a = current[i];
+            const b = next[j];
+            const segments = 10;
+
+            for (let s = 0; s <= segments; s++) {
+              const t = s / segments;
+              points.push({
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t
+              });
+            }
+          }
+        }
+      }
+
+      return points;
+    }
+
+    function applyPointsToParticles(points, jitter = 2) {
+      if (!points.length) return;
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const point = points[i % points.length];
+        const jx = (Math.random() - 0.5) * jitter;
+        const jy = (Math.random() - 0.5) * jitter;
+        p.setTarget(point.x + jx, point.y + jy, 1);
+      }
+    }
+
+    function setState(state) {
+      currentState = state;
+
+      if (state === STATES.SPHERE) {
+        updateSphereTargets();
+        return;
+      }
+
+      if (state === STATES.TEXT) {
+        const points = buildTextPoints(textInput.value);
+
+        if (!points.length) {
+          currentState = STATES.SPHERE;
+          updateSphereTargets();
+          return;
+        }
+
+        applyPointsToParticles(points, 2.5);
+        return;
+      }
+
+      if (state === STATES.STAR) {
+        applyPointsToParticles(buildStarPoints(), 2.2);
+        return;
+      }
+
+      if (state === STATES.GALAXY) {
+        applyPointsToParticles(buildGalaxyPoints(), 1.8);
+        return;
+      }
+
+      if (state === STATES.DNA) {
+        applyPointsToParticles(buildDnaPoints(), 0.8);
+        return;
+      }
+
+      if (state === STATES.NEURAL) {
+        applyPointsToParticles(buildNeuralPoints(), 1.2);
+      }
+    }
+
+    function refreshCurrentStateTargets() {
+      if (currentState === STATES.SPHERE) {
+        updateSphereTargets();
+      } else if (currentState === STATES.TEXT) {
+        const points = buildTextPoints(textInput.value);
+        if (points.length) applyPointsToParticles(points, 2.5);
+      } else if (currentState === STATES.STAR) {
+        applyPointsToParticles(buildStarPoints(), 2.2);
+      } else if (currentState === STATES.GALAXY) {
+        applyPointsToParticles(buildGalaxyPoints(), 1.8);
+      } else if (currentState === STATES.DNA) {
+        applyPointsToParticles(buildDnaPoints(), 0.8);
+      } else if (currentState === STATES.NEURAL) {
+        applyPointsToParticles(buildNeuralPoints(), 1.2);
+      }
+    }
+
+    function triggerExplosion() {
+      for (const p of particles) {
+        p.explode(16);
+      }
+
+      if (reformTimerId !== null) {
+        clearTimeout(reformTimerId);
+      }
+
+      reformTimerId = setTimeout(() => {
+        reformTimerId = null;
+        refreshCurrentStateTargets();
+      }, 240);
+    }
+
+    function updateCycle(dt) {
+      if (!autoCycle) return;
+
+      cycleElapsed += dt;
+      const currentStep = cycleSequence[currentCycleIndex];
+
+      if (cycleElapsed >= currentStep.duration) {
+        cycleElapsed = 0;
+        currentCycleIndex = (currentCycleIndex + 1) % cycleSequence.length;
+        setState(cycleSequence[currentCycleIndex].state);
+      }
+    }
+
+    function update(dt) {
+      globalTime += dt;
+
+      if (currentState === STATES.SPHERE) {
+        updateSphereTargets();
+      } else if (currentState === STATES.GALAXY) {
+        applyPointsToParticles(buildGalaxyPoints(), 1.6);
+      } else if (currentState === STATES.DNA) {
+        applyPointsToParticles(buildDnaPoints(), 0.7);
+      } else if (currentState === STATES.NEURAL) {
+        applyPointsToParticles(buildNeuralPoints(), 0.9);
+      }
+
+      updateCycle(dt);
+
+      for (const p of particles) {
+        p.update(dt);
+      }
+    }
+
+    function drawBackground() {
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(0, 0, 0, 0.12)";
+      ctx.fillRect(0, 0, width, height);
+
+      const gradient = ctx.createRadialGradient(
+        width / 2, height / 2, 0,
+        width / 2, height / 2, Math.max(width, height) * 0.55
+      );
+      gradient.addColorStop(0, "rgba(255,255,255,0.03)");
+      gradient.addColorStop(0.35, "rgba(120,150,255,0.02)");
+      gradient.addColorStop(1, "rgba(0,0,0,0)");
+
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    function draw() {
+      drawBackground();
+
+      for (const p of particles) {
+        p.draw();
+      }
+
+      ctx.shadowBlur = 0;
+    }
+
+    let lastTime = performance.now();
+
+    function animate(now) {
+      const dt = Math.min(33, now - lastTime);
+      lastTime = now;
+
+      update(dt);
+      draw();
+
+      requestAnimationFrame(animate);
+    }
+
+    function resizeScene() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+
+      offCanvas.width = width;
+      offCanvas.height = height;
+
+      assignSphereBase();
+      refreshCurrentStateTargets();
+    }
+
+    applyBtn.addEventListener("click", () => {
+      if (textInput.value.trim() === "") {
+        setState(STATES.SPHERE);
+        return;
+      }
+
+      setState(STATES.TEXT);
+      currentCycleIndex = 1;
+      cycleElapsed = 0;
+    });
+
+    cycleBtn.addEventListener("click", () => {
+      autoCycle = !autoCycle;
+      cycleBtn.textContent = autoCycle ? "自動変形: ON" : "自動変形: OFF";
+    });
+
+    explodeBtn.addEventListener("click", triggerExplosion);
+
+    textInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        if (textInput.value.trim() === "") {
+          setState(STATES.SPHERE);
+        } else {
+          setState(STATES.TEXT);
+          currentCycleIndex = 1;
+          cycleElapsed = 0;
+        }
+      }
+    });
+
+    textInput.addEventListener("input", () => {
+      if (textInput.value.trim() === "") {
+        setState(STATES.SPHERE);
+      }
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+      mouse.active = true;
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      mouse.active = false;
+    });
+
+    canvas.addEventListener("click", triggerExplosion);
+
+    window.addEventListener("resize", resizeScene);
+
+    initParticles();
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
